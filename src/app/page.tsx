@@ -1,10 +1,10 @@
-import Index from "@/components/Dashboard";
+import Index from "@/components/dashboard";
 import { Metadata } from "next";
 import DefaultLayout from "@/components/Layouts/DefaultLayout";
 
 export const metadata: Metadata = {
   title:
-    "Next.js E-commerce Dashboard | TailAdmin - Next.js Dashboard Template",
+    "ProteinBind",
   description: "This is Next.js Home for TailAdmin Dashboard Template",
 };
 
