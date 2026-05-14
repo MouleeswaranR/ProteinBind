@@ -83,12 +83,12 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
       const generatedMolecules = history.flatMap((entry: any) => 
         entry.generatedMolecules.map((m: any, index: number) => {
           const moleculeDetails = {
-            moleculeName: entry.smiles ? (entry.smiles.length > 20 ? entry.smiles.substring(0, 20) : entry.smiles) : 'Molecule',
-            smilesStructure: m.structure || m.smiles || "", 
-            molecularWeight: m.score || 0, 
-            categoryUsage: "Generated",
+            moleculeName: m.name || (entry.smiles ? (entry.smiles.length > 20 ? entry.smiles.substring(0, 20) + "…" : entry.smiles) : 'Molecule'),
+            smilesStructure: m.structure || m.smiles || "",
+            molecularWeight: m.weight || 0,
+            score: m.score || 0,
+            categoryUsage: m.source === "molmim" ? "MolMIM" : "PubChem",
             isGenerated: true,
-            score: m.score || 0
           };
           
           console.log("Loaded generated molecule:", moleculeDetails);
@@ -139,22 +139,22 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
         <div className="grid grid-cols-3 rounded-lg bg-gray-2 dark:bg-[#121212] sm:grid-cols-4">
           <div className="p-2.5 xl:p-5">
             <h5 className="text-sm font-medium uppercase xsm:text-base">
-              Molecule name
+              Molecule Name
             </h5>
           </div>
           <div className="p-2.5 text-center xl:p-5">
             <h5 className="text-sm font-medium uppercase xsm:text-base">
-              Smile Structure Image
+              Structure
             </h5>
           </div>
           <div className="p-2.5 text-center xl:p-5">
             <h5 className="text-sm font-medium uppercase xsm:text-base">
-              Weights / Score
+              {onlyGenerated ? "Score (QED)" : "Mol. Weight (g/mol)"}
             </h5>
           </div>
           <div className="hidden p-2.5 text-center sm:block xl:p-5">
             <h5 className="text-sm font-medium uppercase xsm:text-base">
-              Category Usage
+              {onlyGenerated ? "Source" : "Category"}
             </h5>
           </div>
         </div>
@@ -169,34 +169,58 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
               }`}
               key={key}
             >
+              {/* Molecule Name */}
+              <div className="flex items-center p-2.5 xl:p-5">
+                <div>
+                  <p className="font-medium text-black dark:text-white">
+                    {molecule.moleculeName}
+                  </p>
+                  {molecule.isGenerated && molecule.smilesStructure && (
+                    <p className="mt-1 max-w-[160px] truncate text-xs text-gray-400" title={molecule.smilesStructure}>
+                      {molecule.smilesStructure}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Structure image */}
+              <div className="flex items-center justify-center p-2.5 xl:p-5">
+                <MoleculeStructure
+                  id={`mol-${key}-${molecule.moleculeName.replace(/\s+/g, '-')}`}
+                  structure={molecule.smilesStructure}
+                  scores={molecule.score}
+                  svgMode={true}
+                  width={150}
+                  height={150}
+                />
+              </div>
+
+              {/* Weight or Score */}
               <div className="flex items-center justify-center p-2.5 xl:p-5">
                 <p className="text-black dark:text-white">
-                  {molecule.moleculeName}
+                  {onlyGenerated
+                    ? molecule.score > 0
+                      ? molecule.score.toFixed(4)
+                      : "—"
+                    : molecule.molecularWeight
+                      ? `${molecule.molecularWeight}`
+                      : "—"}
                 </p>
               </div>
 
-              <div className="flex items-center gap-3 p-2.5 xl:p-5">
-                <div className="flex-shrink-0">
-                  <MoleculeStructure
-                    id={`mol-${key}-${molecule.moleculeName.replace(/\s+/g, '-')}`}
-                    structure={molecule.smilesStructure}
-                    scores={molecule.score}
-                    svgMode={true}
-                    width={150}
-                    height={150}
-                  />                </div>
-              </div>
-
+              {/* Source / Category */}
               <div className="hidden items-center justify-center p-2.5 sm:flex xl:p-5">
-                <p className="text-black dark:text-white">
-                  {molecule.molecularWeight}
-                </p>
-              </div>
-
-              <div className="hidden items-center justify-center p-2.5 sm:flex xl:p-5">
-                <p className="text-black dark:text-white">
+                <span
+                  className={`inline-block rounded-full px-3 py-1 text-xs font-medium ${
+                    molecule.categoryUsage === "MolMIM"
+                      ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+                      : molecule.categoryUsage === "PubChem"
+                      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                      : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                  }`}
+                >
                   {molecule.categoryUsage}
-                </p>
+                </span>
               </div>
             </div>
           ))

@@ -2,97 +2,146 @@
 
 import { NextResponse } from 'next/server';
 
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || process.env.NEXT_PUBLIC_NVIDIA_API_KEY || '';
+
+// ── NVIDIA MolMIM ──────────────────────────────────────────────────────────────
+async function generateWithMolMIM(inputSmiles: string, numMolecules: number) {
+  const res = await fetch(
+    'https://health.api.nvidia.com/v1/biology/nvidia/molmim/generate',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${NVIDIA_API_KEY}`,
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        smi: inputSmiles,
+        num_molecules: numMolecules,
+        iterations: 10,
+        min_similarity: 0.3,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('[MolMIM] Error', res.status, err);
+    return null;
+  }
+
+  const data = await res.json();
+
+  // molecules is returned as a JSON *string* by NIM MolMIM
+  let raw: any[] = data.molecules;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { return null; }
+  }
+  if (!Array.isArray(raw)) return null;
+
+  // Enrich each SMILES with IUPAC name + weight from PubChem
+  const enriched = await Promise.all(
+    raw.map(async (m: any) => {
+      const smiles = m.sample || m.smiles || '';
+      if (!smiles) return null;
+      const name = await fetchIUPACName(smiles);
+      return { smiles, name: name.iupac || '', weight: name.weight || 0, score: m.score ?? 0 };
+    })
+  );
+
+  return enriched.filter(Boolean);
+}
+
+// ── PubChem similarity search ──────────────────────────────────────────────────
+async function generateWithPubChem(inputSmiles: string, numMolecules: number) {
+  const searchRes = await fetch(
+    `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/fastsimilarity_2d/smiles/cids/JSON?MaxRecords=${numMolecules}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `smiles=${encodeURIComponent(inputSmiles)}`,
+    }
+  );
+
+  if (!searchRes.ok) return null;
+  const searchData = await searchRes.json();
+  const cids: number[] = searchData.IdentifierList?.CID;
+  if (!cids || cids.length === 0) return [];
+
+  const propRes = await fetch(
+    `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cids.join(',')}/property/CanonicalSMILES,IsomericSMILES,IUPACName,MolecularWeight/JSON`
+  );
+  if (!propRes.ok) return null;
+  const propData = await propRes.json();
+  const properties: any[] = propData.PropertyTable?.Properties || [];
+
+  return properties
+    .map((prop: any) => {
+      const smiles =
+        prop.CanonicalSMILES || prop.IsomericSMILES || prop.SMILES || prop.ConnectivitySMILES;
+      if (!smiles) return null;
+      return { smiles, name: prop.IUPACName || `CID ${prop.CID}`, weight: prop.MolecularWeight || 0, score: 0.85 };
+    })
+    .filter(Boolean);
+}
+
+// ── PubChem IUPAC name lookup ──────────────────────────────────────────────────
+async function fetchIUPACName(smiles: string): Promise<{ iupac: string; weight: number }> {
+  try {
+    const res = await fetch(
+      'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/property/IUPACName,MolecularWeight/JSON',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `smiles=${encodeURIComponent(smiles)}`,
+      }
+    );
+    if (!res.ok) return { iupac: '', weight: 0 };
+    const data = await res.json();
+    const props = data.PropertyTable?.Properties?.[0];
+    return { iupac: props?.IUPACName || '', weight: parseFloat(props?.MolecularWeight) || 0 };
+  } catch {
+    return { iupac: '', weight: 0 };
+  }
+}
+
+// ── Route handler ──────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    
-    // Support both skeletons (array) and smiles (string) inputs
     const inputSmiles = body.skeletons?.[0] || body.smiles;
     const numMolecules = body.num_molecules || 5;
 
-    console.log("Incoming request for PubChem similarity search:", { inputSmiles, numMolecules });
-
     if (!inputSmiles) {
-      return NextResponse.json(
-        { error: 'Missing input SMILES' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Missing input SMILES' }, { status: 400 });
     }
 
-    // Step 1: Search for similar compounds in PubChem to "generate" candidates
-    // We use the 2D fast similarity search endpoint
-    const searchUrl = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/fastsimilarity_2d/smiles/${encodeURIComponent(inputSmiles)}/cids/JSON?MaxRecords=${numMolecules}`;
-    
-    const searchResponse = await fetch(searchUrl);
-    const searchData = await searchResponse.json();
+    console.log('[molecule-generation] Input:', { inputSmiles, numMolecules });
 
-    if (!searchResponse.ok) {
-      console.error("PubChem Search Error:", searchData);
-      return NextResponse.json(
-        { error: 'PubChem similarity search failed', details: searchData },
-        { status: searchResponse.status }
-      );
+    // Try MolMIM first (uses NVIDIA API key), fall back to PubChem
+    let molecules: any[] | null = null;
+    let source = 'molmim';
+
+    if (NVIDIA_API_KEY) {
+      console.log('[molecule-generation] Trying MolMIM...');
+      molecules = await generateWithMolMIM(inputSmiles, numMolecules);
     }
 
-    const cids = searchData.IdentifierList?.CID;
-
-    if (!cids || cids.length === 0) {
-      return NextResponse.json({ molecules: [] });
+    if (!molecules || molecules.length === 0) {
+      console.log('[molecule-generation] Falling back to PubChem...');
+      source = 'pubchem';
+      molecules = await generateWithPubChem(inputSmiles, numMolecules);
     }
 
-    // Step 2: Fetch the CanonicalSMILES, IsomericSMILES, IUPACName, and MolecularWeight
-    const propertyUrl = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cids.join(',')}/property/CanonicalSMILES,IsomericSMILES,IUPACName,MolecularWeight/JSON`;
-    
-    console.log("Fetching properties from PubChem URL:", propertyUrl);
-    const propertyResponse = await fetch(propertyUrl);
-    const propertyData = await propertyResponse.json();
-
-    if (!propertyResponse.ok) {
-      console.error("PubChem Property Error:", propertyData);
-      return NextResponse.json(
-        { error: 'Failed to fetch molecule properties from PubChem', details: propertyData },
-        { status: propertyResponse.status }
-      );
+    if (!molecules) {
+      return NextResponse.json({ error: 'Both MolMIM and PubChem failed to return molecules' }, { status: 502 });
     }
 
-    const properties = propertyData.PropertyTable?.Properties || [];
-
-    console.log(`Found ${properties.length} property sets from PubChem.`);
-    if (properties.length > 0) {
-      console.log("Keys available in PubChem property object:", Object.keys(properties[0]));
-    }
-
-    // Step 3: Format the response to match what the frontend expects
-    const molecules = properties.map((prop: any, i: number) => {
-      // Use whatever SMILES field is available
-      const smiles = prop.CanonicalSMILES || prop.IsomericSMILES;
-      
-      if (!smiles) {
-        console.log(`CID ${prop.CID} missing SMILES data. Available keys:`, Object.keys(prop));
-        return null;
-      }
-
-      return {
-        smiles: smiles,
-        name: prop.IUPACName || `CID: ${prop.CID}`,
-        weight: prop.MolecularWeight || 0,
-        score: 0.85, // Score isn't provided by PubChem similarity search, keeping a static placeholder for UI
-      };
-    }).filter(Boolean); // Remove null entries
-
-    console.log("Final molecules array being sent to frontend:", JSON.stringify(molecules, null, 2));
-
-    return NextResponse.json({ molecules });
+    console.log(`[molecule-generation] Source: ${source}, molecules: ${molecules.length}`);
+    return NextResponse.json({ molecules, source });
 
   } catch (error: any) {
-    console.error("Internal Server Error in Molecule Generation:", error);
-
-    return NextResponse.json(
-      {
-        error: 'Internal server error',
-        message: error.message,
-      },
-      { status: 500 }
-    );
+    console.error('[molecule-generation] Internal error:', error);
+    return NextResponse.json({ error: 'Internal server error', message: error.message }, { status: 500 });
   }
 }

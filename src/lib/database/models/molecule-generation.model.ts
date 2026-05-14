@@ -25,7 +25,10 @@ const MoleculeGenerationHistorySchema = new Schema(
     generatedMolecules: [
       {
         structure: { type: String, required: true },
+        name: { type: String, default: "" },
+        weight: { type: Number, default: 0 },
         score: { type: Number, required: true },
+        source: { type: String, default: "" },
       },
     ],
     user: {

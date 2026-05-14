@@ -1,5 +1,5 @@
 "use client";
-import Modal from "@/app/ui/modals/page";
+import Modal from "@/components/ui/Modal";
 import React, { useState } from "react";
 import { useUser } from "@/app/context/UserContext";
 import { createMoleculeGenerationHistory } from "@/lib/actions/molecule-generation.action";
@@ -83,7 +83,10 @@ const ComponentHeader: React.FC<ComponentHeaderProps> = ({
           iterations: formData.iterations,
           generatedMolecules: data.molecules ? data.molecules.map((m: any) => ({
             structure: m.smiles || m.structure,
-            score: m.weight || m.score || 0,
+            name: m.name || "",
+            weight: parseFloat(m.weight) || 0,
+            score: parseFloat(m.score) || 0,
+            source: data.source || "pubchem",
           })).filter((m: any) => m.structure) : [],
         },
         userId,
