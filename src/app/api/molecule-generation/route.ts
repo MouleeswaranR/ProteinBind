@@ -4,6 +4,55 @@ import { NextResponse } from 'next/server';
 
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || process.env.NEXT_PUBLIC_NVIDIA_API_KEY || '';
 
+const PUBCHEM_PROPS = [
+  'MolecularFormula', 'MolecularWeight', 'CanonicalSMILES', 'IsomericSMILES',
+  'InChIKey', 'IUPACName', 'XLogP', 'ExactMass',
+  'TPSA', 'Complexity', 'Charge',
+  'HBondDonorCount', 'HBondAcceptorCount',
+  'RotatableBondCount', 'HeavyAtomCount',
+].join(',');
+
+// Map a PubChem property object → our molecule shape
+function mapPubChemProps(prop: any, score = 0.85) {
+  const smiles = prop.CanonicalSMILES || prop.IsomericSMILES || prop.SMILES || prop.ConnectivitySMILES;
+  if (!smiles) return null;
+  return {
+    smiles,
+    name:        prop.IUPACName       || `CID ${prop.CID}`,
+    formula:     prop.MolecularFormula || '',
+    weight:      parseFloat(prop.MolecularWeight) || 0,
+    exactMass:   parseFloat(prop.ExactMass)       || 0,
+    score,
+    xlogp:       prop.XLogP           ?? null,
+    tpsa:        prop.TPSA             ?? null,
+    hbd:         prop.HBondDonorCount  ?? null,
+    hba:         prop.HBondAcceptorCount ?? null,
+    rotBonds:    prop.RotatableBondCount ?? null,
+    heavyAtoms:  prop.HeavyAtomCount   ?? null,
+    complexity:  prop.Complexity       ?? null,
+    inchikey:    prop.InChIKey         || '',
+  };
+}
+
+// ── Fetch full PubChem properties for a SMILES (POST by SMILES) ───────────────
+async function fetchPubChemBySMILES(smiles: string): Promise<any | null> {
+  try {
+    const res = await fetch(
+      `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/property/${PUBCHEM_PROPS}/JSON`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `smiles=${encodeURIComponent(smiles)}`,
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.PropertyTable?.Properties?.[0] || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── NVIDIA MolMIM ──────────────────────────────────────────────────────────────
 async function generateWithMolMIM(inputSmiles: string, numMolecules: number) {
   const res = await fetch(
@@ -15,37 +64,31 @@ async function generateWithMolMIM(inputSmiles: string, numMolecules: number) {
         Authorization: `Bearer ${NVIDIA_API_KEY}`,
         Accept: 'application/json',
       },
-      body: JSON.stringify({
-        smi: inputSmiles,
-        num_molecules: numMolecules,
-        iterations: 10,
-        min_similarity: 0.3,
-      }),
+      body: JSON.stringify({ smi: inputSmiles, num_molecules: numMolecules, iterations: 10, min_similarity: 0.3 }),
     }
   );
 
-  if (!res.ok) {
-    const err = await res.text();
-    console.error('[MolMIM] Error', res.status, err);
-    return null;
-  }
+  if (!res.ok) { console.error('[MolMIM] Error', res.status, await res.text()); return null; }
 
   const data = await res.json();
-
-  // molecules is returned as a JSON *string* by NIM MolMIM
   let raw: any[] = data.molecules;
-  if (typeof raw === 'string') {
-    try { raw = JSON.parse(raw); } catch { return null; }
-  }
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { return null; } }
   if (!Array.isArray(raw)) return null;
 
-  // Enrich each SMILES with IUPAC name + weight from PubChem
+  // Enrich each SMILES with full PubChem properties (novel molecules may return null)
   const enriched = await Promise.all(
     raw.map(async (m: any) => {
       const smiles = m.sample || m.smiles || '';
       if (!smiles) return null;
-      const name = await fetchIUPACName(smiles);
-      return { smiles, name: name.iupac || '', weight: name.weight || 0, score: m.score ?? 0 };
+      const qedScore = m.score ?? 0;
+      const pubchem = await fetchPubChemBySMILES(smiles);
+      if (pubchem) {
+        return mapPubChemProps({ ...pubchem }, qedScore);
+      }
+      // Novel molecule — return SMILES + score only; RDKit will compute props client-side
+      return { smiles, name: '', formula: '', weight: 0, exactMass: 0, score: qedScore,
+               xlogp: null, tpsa: null, hbd: null, hba: null, rotBonds: null,
+               heavyAtoms: null, complexity: null, inchikey: '' };
     })
   );
 
@@ -62,47 +105,20 @@ async function generateWithPubChem(inputSmiles: string, numMolecules: number) {
       body: `smiles=${encodeURIComponent(inputSmiles)}`,
     }
   );
-
   if (!searchRes.ok) return null;
   const searchData = await searchRes.json();
   const cids: number[] = searchData.IdentifierList?.CID;
   if (!cids || cids.length === 0) return [];
 
   const propRes = await fetch(
-    `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cids.join(',')}/property/CanonicalSMILES,IsomericSMILES,IUPACName,MolecularWeight/JSON`
+    `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cids.join(',')}/property/${PUBCHEM_PROPS}/JSON`
   );
   if (!propRes.ok) return null;
   const propData = await propRes.json();
-  const properties: any[] = propData.PropertyTable?.Properties || [];
 
-  return properties
-    .map((prop: any) => {
-      const smiles =
-        prop.CanonicalSMILES || prop.IsomericSMILES || prop.SMILES || prop.ConnectivitySMILES;
-      if (!smiles) return null;
-      return { smiles, name: prop.IUPACName || `CID ${prop.CID}`, weight: prop.MolecularWeight || 0, score: 0.85 };
-    })
+  return (propData.PropertyTable?.Properties || [])
+    .map((prop: any) => mapPubChemProps(prop, 0.85))
     .filter(Boolean);
-}
-
-// ── PubChem IUPAC name lookup ──────────────────────────────────────────────────
-async function fetchIUPACName(smiles: string): Promise<{ iupac: string; weight: number }> {
-  try {
-    const res = await fetch(
-      'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/property/IUPACName,MolecularWeight/JSON',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `smiles=${encodeURIComponent(smiles)}`,
-      }
-    );
-    if (!res.ok) return { iupac: '', weight: 0 };
-    const data = await res.json();
-    const props = data.PropertyTable?.Properties?.[0];
-    return { iupac: props?.IUPACName || '', weight: parseFloat(props?.MolecularWeight) || 0 };
-  } catch {
-    return { iupac: '', weight: 0 };
-  }
 }
 
 // ── Route handler ──────────────────────────────────────────────────────────────
@@ -116,19 +132,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing input SMILES' }, { status: 400 });
     }
 
-    console.log('[molecule-generation] Input:', { inputSmiles, numMolecules });
-
-    // Try MolMIM first (uses NVIDIA API key), fall back to PubChem
     let molecules: any[] | null = null;
     let source = 'molmim';
 
     if (NVIDIA_API_KEY) {
-      console.log('[molecule-generation] Trying MolMIM...');
       molecules = await generateWithMolMIM(inputSmiles, numMolecules);
     }
 
     if (!molecules || molecules.length === 0) {
-      console.log('[molecule-generation] Falling back to PubChem...');
       source = 'pubchem';
       molecules = await generateWithPubChem(inputSmiles, numMolecules);
     }
@@ -137,7 +148,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Both MolMIM and PubChem failed to return molecules' }, { status: 502 });
     }
 
-    console.log(`[molecule-generation] Source: ${source}, molecules: ${molecules.length}`);
+    console.log(`[molecule-generation] source=${source} count=${molecules.length}`);
     return NextResponse.json({ molecules, source });
 
   } catch (error: any) {

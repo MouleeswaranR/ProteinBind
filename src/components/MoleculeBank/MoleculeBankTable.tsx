@@ -1,8 +1,9 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import MoleculeStructure from "../MoleculeStructure/index";
 import { useUser } from "@/app/context/UserContext";
 import { getMoleculeGenerationHistoryByUser } from "@/lib/actions/molecule-generation.action";
+import { computeMolProps, ComputedMolProps } from "@/lib/utils/molprops";
 
 const staticMoleculeBank = [
   {
@@ -76,6 +77,19 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
   const [searchQuery, setSearchQuery] = useState("");
   const [allMolecules, setAllMolecules] = useState<any[]>(onlyGenerated ? [] : staticMoleculeBank);
   const [filteredMolecules, setFilteredMolecules] = useState<any[]>([]);
+  const [expandedKey, setExpandedKey] = useState<number | null>(null);
+  const [computedProps, setComputedProps] = useState<Record<number, ComputedMolProps | null>>({});
+
+  const handleRowClick = useCallback(async (key: number, molecule: any) => {
+    if (expandedKey === key) { setExpandedKey(null); return; }
+    setExpandedKey(key);
+    // If this molecule is missing properties (novel MolMIM), compute them via RDKit
+    if (computedProps[key] === undefined && molecule.smilesStructure &&
+        molecule.xlogp === null && molecule.tpsa === null) {
+      const props = await computeMolProps(molecule.smilesStructure);
+      setComputedProps(prev => ({ ...prev, [key]: props }));
+    }
+  }, [expandedKey, computedProps]);
 
   const fetchHistory = async () => {
     if (userId) {
@@ -88,8 +102,17 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
             molecularWeight: m.weight || 0,
             score: m.score || 0,
             categoryUsage: m.source === "molmim" ? "MolMIM" : "PubChem",
-            isGenerated: true,
-          };
+            isGenerated: true,            // Extra properties (may be null for novel MolMIM molecules → computed client-side)
+            formula:    m.formula    || null,
+            exactMass:  m.exactMass  || null,
+            xlogp:      m.xlogp      ?? null,
+            tpsa:       m.tpsa       ?? null,
+            hbd:        m.hbd        ?? null,
+            hba:        m.hba        ?? null,
+            rotBonds:   m.rotBonds   ?? null,
+            heavyAtoms: m.heavyAtoms ?? null,
+            complexity: m.complexity ?? null,
+            inchikey:   m.inchikey   || null,          };
           
           console.log("Loaded generated molecule:", moleculeDetails);
           return moleculeDetails;
@@ -160,70 +183,135 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
         </div>
 
         {filteredMolecules.length > 0 ? (
-          filteredMolecules.map((molecule, key) => (
-            <div
-              className={`grid grid-cols-3 sm:grid-cols-4 ${
-                key === filteredMolecules.length - 1
-                  ? ""
-                  : "border-b border-stroke dark:border-strokedark"
-              }`}
-              key={key}
-            >
-              {/* Molecule Name */}
-              <div className="flex items-center p-2.5 xl:p-5">
-                <div>
-                  <p className="font-medium text-black dark:text-white">
-                    {molecule.moleculeName}
-                  </p>
-                  {molecule.isGenerated && molecule.smilesStructure && (
-                    <p className="mt-1 max-w-[160px] truncate text-xs text-gray-400" title={molecule.smilesStructure}>
-                      {molecule.smilesStructure}
-                    </p>
-                  )}
-                </div>
-              </div>
+          filteredMolecules.map((molecule, key) => {
+            const isExpanded = expandedKey === key;
+            // Prefer stored DB props; fall back to RDKit-computed for novel molecules
+            const cp = computedProps[key];
+            const xlogp      = molecule.xlogp      ?? cp?.xlogp      ?? null;
+            const tpsa        = molecule.tpsa        ?? cp?.tpsa        ?? null;
+            const hbd         = molecule.hbd         ?? cp?.hbd         ?? null;
+            const hba         = molecule.hba         ?? cp?.hba         ?? null;
+            const rotBonds    = molecule.rotBonds    ?? cp?.rotBonds    ?? null;
+            const heavyAtoms  = molecule.heavyAtoms  ?? cp?.heavyAtoms  ?? null;
+            const complexity  = molecule.complexity  ?? cp?.complexity  ?? null;
+            const formula     = molecule.formula     || cp?.formula     || null;
+            const exactMass   = molecule.exactMass   || cp?.exactMass   || null;
+            const inchikey    = molecule.inchikey    || cp?.inchikey    || null;
+            const lipinskiPass = (molecule.molecularWeight || cp?.weight) &&
+              xlogp != null && hbd != null && hba != null
+              ? (molecule.molecularWeight || cp?.weight) <= 500 && xlogp <= 5 && hbd <= 5 && hba <= 10
+              : null;
 
-              {/* Structure image */}
-              <div className="flex items-center justify-center p-2.5 xl:p-5">
-                <MoleculeStructure
-                  id={`mol-${key}-${molecule.moleculeName.replace(/\s+/g, '-')}`}
-                  structure={molecule.smilesStructure}
-                  scores={molecule.score}
-                  svgMode={true}
-                  width={150}
-                  height={150}
-                />
-              </div>
-
-              {/* Weight or Score */}
-              <div className="flex items-center justify-center p-2.5 xl:p-5">
-                <p className="text-black dark:text-white">
-                  {onlyGenerated
-                    ? molecule.score > 0
-                      ? molecule.score.toFixed(4)
-                      : "—"
-                    : molecule.molecularWeight
-                      ? `${molecule.molecularWeight}`
-                      : "—"}
-                </p>
-              </div>
-
-              {/* Source / Category */}
-              <div className="hidden items-center justify-center p-2.5 sm:flex xl:p-5">
-                <span
-                  className={`inline-block rounded-full px-3 py-1 text-xs font-medium ${
-                    molecule.categoryUsage === "MolMIM"
-                      ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
-                      : molecule.categoryUsage === "PubChem"
-                      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-                      : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+            return (
+              <React.Fragment key={key}>
+                {/* Main row — clickable to expand */}
+                <div
+                  className={`grid cursor-pointer grid-cols-3 sm:grid-cols-4 transition-colors hover:bg-gray-50 dark:hover:bg-[#1f1f1f] ${
+                    key === filteredMolecules.length - 1 && !isExpanded
+                      ? ""
+                      : "border-b border-stroke dark:border-strokedark"
                   }`}
+                  onClick={() => handleRowClick(key, molecule)}
                 >
-                  {molecule.categoryUsage}
-                </span>
-              </div>
-            </div>
-          ))
+                  {/* Molecule Name */}
+                  <div className="flex items-center p-2.5 xl:p-5">
+                    <div>
+                      <p className="font-medium text-black dark:text-white">
+                        {molecule.moleculeName}
+                      </p>
+                      {molecule.isGenerated && molecule.smilesStructure && (
+                        <p className="mt-1 max-w-[160px] truncate text-xs text-gray-400" title={molecule.smilesStructure}>
+                          {molecule.smilesStructure}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Structure image */}
+                  <div className="flex items-center justify-center p-2.5 xl:p-5">
+                    <MoleculeStructure
+                      id={`mol-${key}-${molecule.moleculeName.replace(/\s+/g, '-')}`}
+                      structure={molecule.smilesStructure}
+                      scores={molecule.score}
+                      svgMode={true}
+                      width={150}
+                      height={150}
+                    />
+                  </div>
+
+                  {/* Weight or Score */}
+                  <div className="flex items-center justify-center p-2.5 xl:p-5">
+                    <p className="text-black dark:text-white">
+                      {onlyGenerated
+                        ? molecule.score > 0 ? molecule.score.toFixed(4) : "—"
+                        : molecule.molecularWeight ? `${molecule.molecularWeight}` : "—"}
+                    </p>
+                  </div>
+
+                  {/* Source / Category */}
+                  <div className="hidden items-center justify-center p-2.5 sm:flex xl:p-5">
+                    <span
+                      className={`inline-block rounded-full px-3 py-1 text-xs font-medium ${
+                        molecule.categoryUsage === "MolMIM"
+                          ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+                          : molecule.categoryUsage === "PubChem"
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                          : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                      }`}
+                    >
+                      {molecule.categoryUsage}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Expanded detail panel */}
+                {isExpanded && (
+                  <div className="col-span-4 border-b border-stroke bg-gray-50 p-4 dark:border-strokedark dark:bg-[#141414]">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                      {formula && <DetailCard label="Formula" value={formula} />}
+                      {molecule.molecularWeight > 0 && (
+                        <DetailCard label="Mol. Weight" value={`${molecule.molecularWeight} g/mol`} />
+                      )}
+                      {exactMass && <DetailCard label="Exact Mass" value={exactMass} />}
+                      {xlogp != null && <DetailCard label="XLogP" value={xlogp} hint="Lipophilicity" />}
+                      {tpsa != null && <DetailCard label="TPSA" value={`${tpsa} Å²`} hint="Polar surface area" />}
+                      {hbd != null && <DetailCard label="H-Bond Donors" value={hbd} />}
+                      {hba != null && <DetailCard label="H-Bond Acceptors" value={hba} />}
+                      {rotBonds != null && <DetailCard label="Rotatable Bonds" value={rotBonds} />}
+                      {heavyAtoms != null && <DetailCard label="Heavy Atoms" value={heavyAtoms} />}
+                      {complexity != null && <DetailCard label="Complexity" value={complexity} />}
+                      {molecule.score > 0 && onlyGenerated && (
+                        <DetailCard label="QED Score" value={molecule.score.toFixed(6)} hint="Drug-likeness" />
+                      )}
+                      {lipinskiPass != null && (
+                        <div className="rounded-lg border border-stroke p-3 dark:border-strokedark">
+                          <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">Lipinski Ro5</p>
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                            lipinskiPass
+                              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                              : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                          }`}>
+                            {lipinskiPass ? "✓ PASS" : "✗ FAIL"}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    {inchikey && (
+                      <p className="mt-3 break-all text-xs text-gray-400">
+                        <span className="font-medium text-gray-500 dark:text-gray-400">InChIKey: </span>{inchikey}
+                      </p>
+                    )}
+                    {molecule.isGenerated && xlogp === null && computedProps[key] === undefined && (
+                      <p className="mt-2 text-xs text-gray-400 italic">Click to compute properties via RDKit…</p>
+                    )}
+                    {molecule.isGenerated && xlogp === null && computedProps[key] === null && (
+                      <p className="mt-2 text-xs text-amber-500">Novel molecule — RDKit could not parse SMILES.</p>
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })
         ) : (
           <div className="p-5 text-center text-gray-500">
             No molecules found.
@@ -233,5 +321,16 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
     </div>
   );
 };
+
+// ── Small helper card ──────────────────────────────────────────────────────────
+function DetailCard({ label, value, hint }: { label: string; value: any; hint?: string }) {
+  return (
+    <div className="rounded-lg border border-stroke p-3 dark:border-strokedark">
+      <p className="mb-1 text-xs text-gray-500 dark:text-gray-400">{label}</p>
+      <p className="font-medium text-black dark:text-white">{value}</p>
+      {hint && <p className="mt-0.5 text-xs text-gray-400">{hint}</p>}
+    </div>
+  );
+}
 
 export default TableOne;
