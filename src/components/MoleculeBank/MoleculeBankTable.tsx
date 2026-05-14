@@ -204,14 +204,13 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
 
             return (
               <React.Fragment key={key}>
-                {/* Main row — clickable to expand */}
+                {/* Main row */}
                 <div
-                  className={`grid cursor-pointer grid-cols-3 sm:grid-cols-4 transition-colors hover:bg-gray-50 dark:hover:bg-[#1f1f1f] ${
+                  className={`grid grid-cols-3 sm:grid-cols-4 ${
                     key === filteredMolecules.length - 1 && !isExpanded
                       ? ""
                       : "border-b border-stroke dark:border-strokedark"
                   }`}
-                  onClick={() => handleRowClick(key, molecule)}
                 >
                   {/* Molecule Name */}
                   <div className="flex items-center p-2.5 xl:p-5">
@@ -243,13 +242,13 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
                   <div className="flex items-center justify-center p-2.5 xl:p-5">
                     <p className="text-black dark:text-white">
                       {onlyGenerated
-                        ? molecule.score > 0 ? molecule.score.toFixed(4) : "—"
-                        : molecule.molecularWeight ? `${molecule.molecularWeight}` : "—"}
+                        ? molecule.score > 0 ? molecule.score.toFixed(4) : "\u2014"
+                        : molecule.molecularWeight ? `${molecule.molecularWeight}` : "\u2014"}
                     </p>
                   </div>
 
-                  {/* Source / Category */}
-                  <div className="hidden items-center justify-center p-2.5 sm:flex xl:p-5">
+                  {/* Source / Category + Details button */}
+                  <div className="hidden flex-col items-center justify-center gap-2 p-2.5 sm:flex xl:p-5">
                     <span
                       className={`inline-block rounded-full px-3 py-1 text-xs font-medium ${
                         molecule.categoryUsage === "MolMIM"
@@ -261,6 +260,16 @@ const TableOne: React.FC<MoleculeBankTableProps> = ({ onlyGenerated = false }) =
                     >
                       {molecule.categoryUsage}
                     </span>
+                    <button
+                      onClick={() => handleRowClick(key, molecule)}
+                      className={`rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
+                        isExpanded
+                          ? "border-primary bg-primary text-white"
+                          : "border-stroke text-gray-500 hover:border-primary hover:text-primary dark:border-strokedark dark:text-gray-400 dark:hover:border-primary dark:hover:text-primary"
+                      }`}
+                    >
+                      {isExpanded ? "Hide" : "Details"}
+                    </button>
                   </div>
                 </div>
 
